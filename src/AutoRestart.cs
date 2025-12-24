@@ -104,10 +104,4 @@ public class AutoRestart : BasePlugin {
             Core.Logger.LogError(ex, "AutoRestart: Error reading steam.inf");
         }
     }
-
-    [Command("qqquit")]
-    public void Quit(ICommandContext ctx) {
-        Core.Logger.LogInformation("AutoRestart: qqquit command executed, quitting server.");
-        Core.Engine.ExecuteCommand("quit");
-    }
 }
