@@ -6,9 +6,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/build-passing-brightgreen" alt="Build Status">
-  <img src="https://img.shields.io/github/downloads/samayala22/AutoRestart/total" alt="Downloads">
-  <img src="https://img.shields.io/github/stars/samayala22/AutoRestart?style=flat&logo=github" alt="Stars">
-  <img src="https://img.shields.io/github/license/samayala22/AutoRestart" alt="License">
+  <img src="https://img.shields.io/github/downloads/samayala22/CS2-AutoRestart/total" alt="Downloads">
+  <img src="https://img.shields.io/github/stars/samayala22/CS2-AutoRestart?style=flat&logo=github" alt="Stars">
+  <img src="https://img.shields.io/github/license/samayala22/CS2-AutoRestart" alt="License">
 </p>
 
 ## Building
