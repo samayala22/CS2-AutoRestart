@@ -16,12 +16,13 @@ namespace AutoRestart;
 [PluginMetadata(
     Id = "AutoRestart",
     #if WORKFLOW
-        Version = WORKFLOW_VERSION,
+        Version = "WORKFLOW_VERSION",
     #else
         Version = "Local",
     #endif
     Name = "AutoRestart",
-    Author = "Praetor", Description = "Auto Restart for Counter-Strike 2"
+    Author = "Praetor",
+    Description = "Auto Restart for Counter-Strike 2"
 )]
 public class AutoRestart : BasePlugin {
     private static readonly HttpClient m_http_client = new HttpClient ();
