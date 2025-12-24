@@ -1,6 +1,6 @@
 <div align="center">
   <img src="https://pan.samyyc.dev/s/VYmMXE" />
-  <h2><strong>AutoRestart</strong></h2>
+  <h2><strong>CS2-AutoRestart</strong></h2>
   <h3>Plugin that shutsdown the server when an update is found</h3>
 </div>
 

@@ -13,7 +13,16 @@ using SwiftlyS2.Core;
 
 namespace AutoRestart;
 
-[PluginMetadata(Id = "AutoRestart", Version = "1.0.0", Name = "AutoRestart", Author = "Praetor", Description = "Auto Restart for Counter-Strike 2")]
+[PluginMetadata(
+    Id = "AutoRestart",
+    #if WORKFLOW
+        Version = WORKFLOW_VERSION,
+    #else
+        Version = "Local",
+    #endif
+    Name = "AutoRestart",
+    Author = "Praetor", Description = "Auto Restart for Counter-Strike 2"
+)]
 public class AutoRestart : BasePlugin {
     private static readonly HttpClient m_http_client = new HttpClient ();
     private const string SteamApiEndpoint = "https://api.steampowered.com/ISteamApps/UpToDateCheck/v0001/?appid=730&version={0}";

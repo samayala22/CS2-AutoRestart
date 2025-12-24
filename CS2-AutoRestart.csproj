@@ -7,9 +7,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <AssemblyName>AutoRestart</AssemblyName>
+    <AssemblyName>CS2-AutoRestart</AssemblyName>
     <OutputPath>$(MSBuildThisFileDirectory)build/</OutputPath>
-    <PublishDir>$(OutputPath)publish/AutoRestart</PublishDir>
+    <PublishDir>$(OutputPath)publish/CS2-AutoRestart</PublishDir>
   </PropertyGroup>
 
   <ItemGroup>
