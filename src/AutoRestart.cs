@@ -50,6 +50,7 @@ public class PluginConfig
     public string SteamApiEndpoint { get; set; } = "https://api.steampowered.com/ISteamApps/UpToDateCheck/v0001/?appid=730&version={0}";
     public int ScheduledRestartHour { get; set; } = 5; // 5 AM local time
     public string PluginsJsonPath { get; set; } = "/server-config/plugins.json";
+    public string LastModifiedJsonPath { get; set; } = "/server-config/.plugins_last_modified.json";
 }
 
 [PluginMetadata(
@@ -73,6 +74,7 @@ public class AutoRestart : BasePlugin {
     private CancellationTokenSource? m_check_timer_token;
     private string? m_current_version = null;
     private readonly List<RestartCondition> m_restart_conditions = new();
+    private Dictionary<string, string> m_last_modified = new();
 
     public AutoRestart(ISwiftlyCore core) : base(core) {
     }
@@ -105,6 +107,7 @@ public class AutoRestart : BasePlugin {
         InitializeDependencyInjection();
 
         GetSteamInfPatchVersion();
+        LoadLastModified();
 
         m_restart_conditions.Add(CheckScheduledRestart);
         m_restart_conditions.Add(CheckSteamUpdate);
@@ -134,11 +137,10 @@ public class AutoRestart : BasePlugin {
 
     private void ScheduleQuit(string reason) {
         m_check_timer_token?.Cancel();
-        Core.Logger.LogInformation($"AutoRestart: Quit scheduled — {reason}");
-        Core.PlayerManager.SendChat(Helper.Colored($"[red]ATTENTION[default] | Server will restart when all players have left. Reason: {reason}"));
+        Core.Logger.LogInformation($"Quit scheduled — {reason}");
         m_check_timer_token = Core.Scheduler.RepeatBySeconds(m_config.QuitIntervalSeconds, () => {
             if (Core.PlayerManager.PlayerCount == 0) {
-                Core.Logger.LogInformation("AutoRestart: No players online, quitting now.");
+                Core.Logger.LogInformation("No players online, quitting now.");
                 Core.Engine.ExecuteCommand("quit");
             }
         });
@@ -159,7 +161,7 @@ public class AutoRestart : BasePlugin {
             var responseObj = doc.RootElement.GetProperty("response");
 
             if (!responseObj.GetProperty("success").GetBoolean()) {
-                Core.Logger.LogWarning("AutoRestart: Steam API returned success=false");
+                Core.Logger.LogWarning("Steam API returned success=false");
                 return (false, "");
             }
 
@@ -167,7 +169,7 @@ public class AutoRestart : BasePlugin {
             return (updateAvailable, "CS2 update");
         }
         catch (Exception ex) {
-            Core.Logger.LogError(ex, "AutoRestart: Error checking for Steam update");
+            Core.Logger.LogWarning(ex, "Error checking for Steam update");
         }
         return (false, "");
     }
@@ -175,7 +177,7 @@ public class AutoRestart : BasePlugin {
     private async Task<(bool Triggered, string Reason)> CheckPluginUpdates() {
         try {
             if (!File.Exists(m_config.PluginsJsonPath)) {
-                Core.Logger.LogWarning($"AutoRestart: plugins.json not found at {m_config.PluginsJsonPath}");
+                Core.Logger.LogWarning($"plugins.json not found at {m_config.PluginsJsonPath}");
                 return (false, "");
             }
 
@@ -191,14 +193,16 @@ public class AutoRestart : BasePlugin {
 
             foreach (var plugin in githubPlugins) {
                 try {
-                    string latestTag = await FetchGitHubLatestTag(plugin.Name, token);
+                    m_last_modified.TryGetValue(plugin.Name, out string? cachedDate);
+                    string? latestTag = await FetchGitHubLatestTag(plugin.Name, token, cachedDate);
+                    if (latestTag == null) continue; // not modified or error
                     if (latestTag != plugin.Tag) {
-                        Core.Logger.LogInformation($"AutoRestart: Plugin {plugin.Name} has update: {plugin.Tag} -> {latestTag}");
+                        Core.Logger.LogInformation($"Plugin {plugin.Name} has update: {plugin.Tag} -> {latestTag}");
                         outdated.Add(plugin.Name);
                     }
                 }
                 catch (Exception ex) {
-                    Core.Logger.LogError(ex, $"AutoRestart: Error checking plugin {plugin.Name}");
+                    Core.Logger.LogWarning(ex, $"Error checking plugin {plugin.Name}");
                 }
             }
 
@@ -207,23 +211,42 @@ public class AutoRestart : BasePlugin {
             }
         }
         catch (Exception ex) {
-            Core.Logger.LogError(ex, "AutoRestart: Error checking plugin updates");
+            Core.Logger.LogWarning(ex, "Error checking plugin updates");
         }
         return (false, "");
     }
 
-    private static async Task<string> FetchGitHubLatestTag(string repoFullName, string? token) {
-        var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://api.github.com/repos/{repoFullName}/releases/latest");
+    private static async Task<string?> FetchGitHubLatestTag(string repoFullName, string? token, string? cachedDate) {
+        var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repoFullName}/releases/latest");
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("CS2-AutoRestart", "1.0"));
         if (!string.IsNullOrEmpty(token))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
+        if (cachedDate != null)
+            request.Headers.IfModifiedSince = DateTimeOffset.Parse(cachedDate);
+
         var response = await m_http_client.SendAsync(request);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotModified)
+            return null;
+
         response.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         return doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+    }
+
+    private void LoadLastModified() {
+        try {
+            if (File.Exists(m_config.LastModifiedJsonPath)) {
+                string json = File.ReadAllText(m_config.LastModifiedJsonPath);
+                m_last_modified = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+            }
+        }
+        catch (Exception ex) {
+            Core.Logger.LogWarning(ex, "Error loading last-modified cache");
+            m_last_modified = new();
+        }
     }
 
     private void GetSteamInfPatchVersion() {
@@ -231,7 +254,7 @@ public class AutoRestart : BasePlugin {
             string steamInfPath = Path.Combine(Core.CSGODirectory, "steam.inf");
             
             if (!File.Exists(steamInfPath)) {
-                Core.Logger.LogError($"AutoRestart: steam.inf not found at {steamInfPath}");
+                Core.Logger.LogError($"steam.inf not found at {steamInfPath}");
                 return;
             }
 
@@ -239,13 +262,13 @@ public class AutoRestart : BasePlugin {
             var match = Regex.Match(contents, @"PatchVersion=(\d+\.\d+\.\d+\.\d+)");
             
             if (!match.Success) {
-                Core.Logger.LogError("AutoRestart: PatchVersion not found in steam.inf");
+                Core.Logger.LogError("PatchVersion not found in steam.inf");
                 return;
             }
             
             m_current_version = match.Groups[1].Value;
         } catch (Exception ex) {
-            Core.Logger.LogError(ex, "AutoRestart: Error reading steam.inf");
+            Core.Logger.LogError(ex, "Error reading steam.inf");
         }
     }
 }
