@@ -113,6 +113,8 @@ public class AutoRestart : BasePlugin {
         m_restart_conditions.Add(CheckPluginUpdates);
 
         m_check_timer_token = Core.Scheduler.DelayAndRepeatBySeconds(m_config.CheckIntervalSeconds, m_config.CheckIntervalSeconds, OnCheckTimer);
+
+        File.WriteAllText("/tmp/autorestart_loaded", "");
     }
 
     public override void Unload() {
