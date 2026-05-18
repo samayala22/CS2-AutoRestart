@@ -29,9 +29,6 @@ public class PluginEntry
     [JsonPropertyName("tag")]
     public string Tag { get; set; } = "";
 
-    [JsonPropertyName("origin")]
-    public string Origin { get; set; } = "github";
-
     [JsonPropertyName("asset")]
     public string Asset { get; set; } = "";
 
@@ -40,6 +37,9 @@ public class PluginEntry
 
     [JsonPropertyName("depth")]
     public int Depth { get; set; } = 0;
+
+    [JsonPropertyName("last_modified")]
+    public string LastModified { get; set; } = "";
 }
 
 public class PluginConfig
@@ -50,7 +50,6 @@ public class PluginConfig
     public string SteamApiEndpoint { get; set; } = "https://api.steampowered.com/ISteamApps/UpToDateCheck/v0001/?appid=730&version={0}";
     public int ScheduledRestartHour { get; set; } = 5; // 5 AM local time
     public string PluginsJsonPath { get; set; } = "/server-config/plugins.json";
-    public string LastModifiedJsonPath { get; set; } = "/server-config/.plugins_last_modified.json";
 }
 
 [PluginMetadata(
@@ -74,7 +73,7 @@ public class AutoRestart : BasePlugin {
     private CancellationTokenSource? m_check_timer_token;
     private string? m_current_version = null;
     private readonly List<RestartCondition> m_restart_conditions = new();
-    private Dictionary<string, string> m_last_modified = new();
+    private List<PluginEntry> m_plugins = new();
 
     public AutoRestart(ISwiftlyCore core) : base(core) {
     }
@@ -107,7 +106,7 @@ public class AutoRestart : BasePlugin {
         InitializeDependencyInjection();
 
         GetSteamInfPatchVersion();
-        LoadLastModified();
+        LoadPlugins();
 
         m_restart_conditions.Add(CheckScheduledRestart);
         m_restart_conditions.Add(CheckSteamUpdate);
@@ -120,6 +119,7 @@ public class AutoRestart : BasePlugin {
         m_check_timer_token?.Cancel();
         m_check_timer_token = null;
         m_restart_conditions.Clear();
+        m_plugins.Clear();
         m_provider?.Dispose();
     }
 
@@ -145,8 +145,6 @@ public class AutoRestart : BasePlugin {
             }
         });
     }
-
-    // ── Restart Conditions ─────────────────────────────────────────────
 
     private Task<(bool Triggered, string Reason)> CheckScheduledRestart() {
         bool triggered = DateTime.Now.Hour == m_config.ScheduledRestartHour;
@@ -175,25 +173,15 @@ public class AutoRestart : BasePlugin {
     }
 
     private async Task<(bool Triggered, string Reason)> CheckPluginUpdates() {
+        if (m_plugins.Count == 0) return (false, "");
+
         try {
-            if (!File.Exists(m_config.PluginsJsonPath)) {
-                Core.Logger.LogWarning($"plugins.json not found at {m_config.PluginsJsonPath}");
-                return (false, "");
-            }
-
-            string json = await File.ReadAllTextAsync(m_config.PluginsJsonPath);
-            var plugins = JsonSerializer.Deserialize<List<PluginEntry>>(json);
-            if (plugins == null) return (false, "");
-
-            var githubPlugins = plugins.Where(p => p.Origin == "github").ToList();
-            if (githubPlugins.Count == 0) return (false, "");
-
             string? token = Environment.GetEnvironmentVariable("GITHUB_APIKEY");
             List<string> outdated = new();
 
-            foreach (var plugin in githubPlugins) {
+            foreach (var plugin in m_plugins) {
                 try {
-                    m_last_modified.TryGetValue(plugin.Name, out string? cachedDate);
+                    string? cachedDate = string.IsNullOrEmpty(plugin.LastModified) ? null : plugin.LastModified;
                     string? latestTag = await FetchGitHubLatestTag(plugin.Name, token, cachedDate);
                     if (latestTag == null) continue; // not modified or error
                     if (latestTag != plugin.Tag) {
@@ -217,7 +205,7 @@ public class AutoRestart : BasePlugin {
     }
 
     private static async Task<string?> FetchGitHubLatestTag(string repoFullName, string? token, string? cachedDate) {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repoFullName}/releases/latest");
+        var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repoFullName}/releases?per_page=1");
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("CS2-AutoRestart", "1.0"));
         if (!string.IsNullOrEmpty(token))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -233,19 +221,22 @@ public class AutoRestart : BasePlugin {
         response.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+        if (doc.RootElement.GetArrayLength() == 0) return null;
+        return doc.RootElement[0].GetProperty("tag_name").GetString();
     }
 
-    private void LoadLastModified() {
+    private void LoadPlugins() {
         try {
-            if (File.Exists(m_config.LastModifiedJsonPath)) {
-                string json = File.ReadAllText(m_config.LastModifiedJsonPath);
-                m_last_modified = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+            if (!File.Exists(m_config.PluginsJsonPath)) {
+                Core.Logger.LogWarning($"plugins.json not found at {m_config.PluginsJsonPath}");
+                return;
             }
+            string json = File.ReadAllText(m_config.PluginsJsonPath);
+            m_plugins = JsonSerializer.Deserialize<List<PluginEntry>>(json) ?? new();
         }
         catch (Exception ex) {
-            Core.Logger.LogWarning(ex, "Error loading last-modified cache");
-            m_last_modified = new();
+            Core.Logger.LogWarning(ex, "Error loading plugins.json");
+            m_plugins = new();
         }
     }
 
