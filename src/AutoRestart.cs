@@ -38,8 +38,8 @@ public class PluginEntry
     [JsonPropertyName("depth")]
     public int Depth { get; set; } = 0;
 
-    [JsonPropertyName("last_modified")]
-    public string LastModified { get; set; } = "";
+    [JsonPropertyName("etag")]
+    public string? Etag { get; set; }
 }
 
 public class PluginConfig
@@ -183,9 +183,10 @@ public class AutoRestart : BasePlugin {
 
             foreach (var plugin in m_plugins) {
                 try {
-                    string? cachedDate = string.IsNullOrEmpty(plugin.LastModified) ? null : plugin.LastModified;
-                    string? latestTag = await FetchGitHubLatestTag(plugin.Name, token, cachedDate);
-                    if (latestTag == null) continue; // not modified or error
+                    var result = await FetchGitHubLatestTag(plugin.Name, token, plugin.Etag);
+                    if (result == null) continue; // not modified or error
+                    var (latestTag, newEtag) = result.Value;
+                    if (newEtag != null) plugin.Etag = newEtag;
                     if (latestTag != plugin.Tag) {
                         Core.Logger.LogInformation($"Plugin {plugin.Name} has update: {plugin.Tag} -> {latestTag}");
                         outdated.Add(plugin.Name);
@@ -206,14 +207,14 @@ public class AutoRestart : BasePlugin {
         return (false, "");
     }
 
-    private static async Task<string?> FetchGitHubLatestTag(string repoFullName, string? token, string? cachedDate) {
+    private static async Task<(string? Tag, string? NewEtag)?> FetchGitHubLatestTag(string repoFullName, string? token, string? etag) {
         var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repoFullName}/releases?per_page=1");
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("CS2-AutoRestart", "1.0"));
         if (!string.IsNullOrEmpty(token))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        if (cachedDate != null)
-            request.Headers.IfModifiedSince = DateTimeOffset.Parse(cachedDate);
+        if (!string.IsNullOrEmpty(etag))
+            request.Headers.IfNoneMatch.Add(EntityTagHeaderValue.Parse(etag));
 
         var response = await m_http_client.SendAsync(request);
 
@@ -222,9 +223,10 @@ public class AutoRestart : BasePlugin {
 
         response.EnsureSuccessStatusCode();
 
+        string? newEtag = response.Headers.ETag?.ToString();
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         if (doc.RootElement.GetArrayLength() == 0) return null;
-        return doc.RootElement[0].GetProperty("tag_name").GetString();
+        return (doc.RootElement[0].GetProperty("tag_name").GetString(), newEtag);
     }
 
     private void LoadPlugins() {
