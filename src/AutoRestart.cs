@@ -114,6 +114,12 @@ public class AutoRestart : BasePlugin {
 
         m_check_timer_token = Core.Scheduler.DelayAndRepeatBySeconds(m_config.CheckIntervalSeconds, m_config.CheckIntervalSeconds, OnCheckTimer);
 
+        string configPath = Core.Configuration.GetConfigPath("config.jsonc");
+        if (!File.Exists(configPath)) {
+            Core.Logger.LogError($"config.jsonc not found at {configPath}");
+            return;
+        }
+
         File.WriteAllText("/tmp/autorestart_loaded", "");
     }
 
