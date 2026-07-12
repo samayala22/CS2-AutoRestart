@@ -186,7 +186,8 @@ public class AutoRestart : BasePlugin {
                     var result = await FetchGitHubLatestTag(plugin.Name, token, plugin.Etag);
                     if (result == null) continue; // not modified or error
                     var (latestTag, newEtag) = result.Value;
-                    if (newEtag != null) plugin.Etag = newEtag;
+                    plugin.Etag = newEtag;
+                    if (latestTag.Contains("beta")) continue; // skip beta versions
                     if (latestTag != plugin.Tag) {
                         Core.Logger.LogInformation($"Plugin {plugin.Name} has update: {plugin.Tag} -> {latestTag}");
                         outdated.Add(plugin.Name);
@@ -207,7 +208,7 @@ public class AutoRestart : BasePlugin {
         return (false, "");
     }
 
-    private static async Task<(string? Tag, string? NewEtag)?> FetchGitHubLatestTag(string repoFullName, string? token, string? etag) {
+    private static async Task<(string Tag, string NewEtag)?> FetchGitHubLatestTag(string repoFullName, string? token, string? etag) {
         var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repoFullName}/releases?per_page=1");
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("CS2-AutoRestart", "1.0"));
         if (!string.IsNullOrEmpty(token))
@@ -226,7 +227,10 @@ public class AutoRestart : BasePlugin {
         string? newEtag = response.Headers.ETag?.ToString();
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         if (doc.RootElement.GetArrayLength() == 0) return null;
-        return (doc.RootElement[0].GetProperty("tag_name").GetString(), newEtag);
+        if (newEtag == null) return null;
+        string? tag = doc.RootElement[0].GetProperty("tag_name").GetString();
+        if (tag == null) return null;
+        return (tag, newEtag);
     }
 
     private void LoadPlugins() {
