@@ -21,25 +21,22 @@ using SwiftlyS2.Core;
 
 namespace AutoRestart;
 
+// An entry in plugins.json (desired state, written by the user).
 public class PluginEntry
 {
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    // Optional pin. When set, this exact tag is wanted instead of the latest.
+    [JsonPropertyName("version")]
+    public string? Version { get; set; }
+}
+
+// An entry in .plugin-state.json (installed state, written by the installer).
+public class StateEntry
+{
     [JsonPropertyName("tag")]
     public string Tag { get; set; } = "";
-
-    [JsonPropertyName("asset")]
-    public string Asset { get; set; } = "";
-
-    [JsonPropertyName("destination")]
-    public string Destination { get; set; } = "";
-
-    [JsonPropertyName("depth")]
-    public int Depth { get; set; } = 0;
-
-    [JsonPropertyName("etag")]
-    public string? Etag { get; set; }
 }
 
 public class PluginConfig
@@ -50,6 +47,7 @@ public class PluginConfig
     public string SteamApiEndpoint { get; set; } = "https://api.steampowered.com/ISteamApps/UpToDateCheck/v0001/?appid=730&version={0}";
     public int ScheduledRestartHour { get; set; } = 5; // 5 AM local time
     public string PluginsJsonPath { get; set; } = "/server-config/plugins.json";
+    public string PluginStatePath { get; set; } = "/home/steam/cs2/.plugin-state.json";
 }
 
 [PluginMetadata(
@@ -74,6 +72,8 @@ public class AutoRestart : BasePlugin {
     private string? m_current_version = null;
     private readonly List<RestartCondition> m_restart_conditions = new();
     private List<PluginEntry> m_plugins = new();
+    private Dictionary<string, string> m_installed = new();
+    private readonly Dictionary<string, string> m_etags = new();
 
     public AutoRestart(ISwiftlyCore core) : base(core) {
     }
@@ -128,6 +128,8 @@ public class AutoRestart : BasePlugin {
         m_check_timer_token = null;
         m_restart_conditions.Clear();
         m_plugins.Clear();
+        m_installed.Clear();
+        m_etags.Clear();
         m_provider?.Dispose();
     }
 
@@ -181,36 +183,51 @@ public class AutoRestart : BasePlugin {
     }
 
     private async Task<(bool Triggered, string Reason)> CheckPluginUpdates() {
+        // Re-read both files every check so edits to plugins.json, such as a new
+        // pin, are noticed without a restart.
+        LoadPlugins();
         if (m_plugins.Count == 0) return (false, "");
 
-        try {
-            string? token = Environment.GetEnvironmentVariable("GITHUB_APIKEY");
-            List<string> outdated = new();
+        string? token = Environment.GetEnvironmentVariable("GITHUB_APIKEY");
 
-            foreach (var plugin in m_plugins) {
-                try {
-                    var result = await FetchGitHubLatestTag(plugin.Name, token, plugin.Etag);
-                    if (result == null) continue; // not modified or error
-                    var (latestTag, newEtag) = result.Value;
-                    plugin.Etag = newEtag;
-                    if (latestTag.Contains("beta")) continue; // skip beta versions
-                    if (latestTag != plugin.Tag) {
-                        Core.Logger.LogInformation($"Plugin {plugin.Name} has update: {plugin.Tag} -> {latestTag}");
-                        outdated.Add(plugin.Name);
-                    }
+        foreach (var plugin in m_plugins) {
+            m_installed.TryGetValue(plugin.Name, out string? installed);
+
+            // Pinned plugins want one specific tag, so there is nothing to ask
+            // GitHub. A mismatch means the installer has not applied the pin yet.
+            if (!string.IsNullOrEmpty(plugin.Version)) {
+                if (plugin.Version != installed) {
+                    Core.Logger.LogInformation($"Plugin {plugin.Name} pinned to {plugin.Version}, installed {installed ?? "nothing"}");
+                    return (true, "Plugin pin changed");
                 }
-                catch (Exception ex) {
-                    Core.Logger.LogWarning(ex, $"Error checking plugin {plugin.Name}");
-                }
+                continue;
             }
 
-            if (outdated.Count > 0) {
-                return (true, $"Plugin update");
+            try {
+                m_etags.TryGetValue(plugin.Name, out string? etag);
+                var result = await FetchGitHubLatestTag(plugin.Name, token, etag);
+                if (result == null) continue; // not modified or nothing usable
+                var (latestTag, newEtag) = result.Value;
+                m_etags[plugin.Name] = newEtag;
+                if (latestTag.Contains("beta")) continue; // skip beta versions
+                if (latestTag != installed) {
+                    Core.Logger.LogInformation($"Plugin {plugin.Name} has update: {installed ?? "nothing"} -> {latestTag}");
+                    return (true, "Plugin update");
+                }
+            }
+            catch (Exception ex) {
+                Core.Logger.LogWarning(ex, $"Error checking plugin {plugin.Name}");
             }
         }
-        catch (Exception ex) {
-            Core.Logger.LogWarning(ex, "Error checking plugin updates");
+
+        // Installed but no longer wanted: the installer uninstalls it on boot.
+        foreach (var name in m_installed.Keys) {
+            if (!m_plugins.Any(p => p.Name == name)) {
+                Core.Logger.LogInformation($"Plugin {name} removed from plugins.json, pending uninstall");
+                return (true, "Plugin removed");
+            }
         }
+
         return (false, "");
     }
 
@@ -240,24 +257,29 @@ public class AutoRestart : BasePlugin {
     }
 
     private void LoadPlugins() {
+        m_plugins = ReadJson<List<PluginEntry>>(m_config.PluginsJsonPath) ?? new();
+        var state = ReadJson<Dictionary<string, StateEntry>>(m_config.PluginStatePath) ?? new();
+        m_installed = state.ToDictionary(entry => entry.Key, entry => entry.Value.Tag);
+    }
+
+    private T? ReadJson<T>(string path) {
         try {
-            if (!File.Exists(m_config.PluginsJsonPath)) {
-                Core.Logger.LogWarning($"plugins.json not found at {m_config.PluginsJsonPath}");
-                return;
+            if (!File.Exists(path)) {
+                Core.Logger.LogWarning($"{path} not found");
+                return default;
             }
-            string json = File.ReadAllText(m_config.PluginsJsonPath);
-            m_plugins = JsonSerializer.Deserialize<List<PluginEntry>>(json) ?? new();
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path));
         }
         catch (Exception ex) {
-            Core.Logger.LogWarning(ex, "Error loading plugins.json");
-            m_plugins = new();
+            Core.Logger.LogWarning(ex, $"Error loading {path}");
+            return default;
         }
     }
 
     private void GetSteamInfPatchVersion() {
         try {
             string steamInfPath = Path.Combine(Core.CSGODirectory, "steam.inf");
-            
+
             if (!File.Exists(steamInfPath)) {
                 Core.Logger.LogError($"steam.inf not found at {steamInfPath}");
                 return;
@@ -265,12 +287,12 @@ public class AutoRestart : BasePlugin {
 
             string contents = File.ReadAllText(steamInfPath);
             var match = Regex.Match(contents, @"PatchVersion=(\d+\.\d+\.\d+\.\d+)");
-            
+
             if (!match.Success) {
                 Core.Logger.LogError("PatchVersion not found in steam.inf");
                 return;
             }
-            
+
             m_current_version = match.Groups[1].Value;
         } catch (Exception ex) {
             Core.Logger.LogError(ex, "Error reading steam.inf");
